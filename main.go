@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sync"
 )
 
 type certs struct {
@@ -16,32 +17,50 @@ type certs struct {
 	Cert string
 }
 
+var wg sync.WaitGroup
+
 func main() {
 	urls := readCsvFile("urls.csv")
 
-	var errs []certs
+	errs := make(chan certs)
+	var results []certs
+	fmt.Println(len(urls))
+	wg.Add(len(urls))
 
 	for _, v := range urls {
-		http.DefaultTransport.(*http.Transport).TLSClientConfig = &tls.Config{}
-		_, err := http.Get(v[0])
-		if err != nil {
-			a := certs{
-				Url:  v[0],
-				Cert: err.Error(),
-			}
-			errs = append(errs, a)
-			fmt.Println(err.Error())
-		}
+		go queryAsync(v[0], errs)
 	}
-	fmt.Println(errs)
-	file, err := json.MarshalIndent(errs, "", " ")
+
+	go func() {
+		for v := range errs {
+			fmt.Printf("Found bad cert for %s\n", v.Url)
+			results = append(results, v)
+		}
+	}()
+
+	wg.Wait()
+	close(errs)
+
+	file, err := json.MarshalIndent(results, "", " ")
 	if err != nil {
 		log.Fatalf("Error indenting - %s", err.Error())
 	}
 
-	fmt.Println(string(file))
-
 	_ = ioutil.WriteFile("output.json", file, 0644)
+}
+
+func queryAsync(url string, errs chan certs) {
+	defer wg.Done()
+	http.DefaultTransport.(*http.Transport).TLSClientConfig = &tls.Config{}
+	fmt.Printf("Running for %s\n", url)
+	_, err := http.Get(url)
+	if err != nil {
+		a := certs{
+			Url:  url,
+			Cert: err.Error(),
+		}
+		errs <- a
+	}
 }
 
 func readCsvFile(filePath string) [][]string {
